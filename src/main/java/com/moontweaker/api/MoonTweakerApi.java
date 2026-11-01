@@ -8,8 +8,6 @@ package com.moontweaker.api;
  * refuse to run in the wrong place.
  */
 public final class MoonTweakerApi {
-
     public static String currentStage = "";
-
     private MoonTweakerApi() {}
 }

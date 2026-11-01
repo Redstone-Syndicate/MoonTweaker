@@ -7,6 +7,7 @@ import net.minecraftforge.fluids.FluidRegistry;
 import net.minecraftforge.fluids.FluidStack;
 import net.minecraftforge.fml.common.Loader;
 import net.minecraftforge.fml.common.registry.ForgeRegistries;
+import net.minecraft.item.crafting.FurnaceRecipes;
 import net.minecraftforge.oredict.OreDictionary;
 import org.apache.logging.log4j.Logger;
 import org.luaj.vm2.Globals;
@@ -27,6 +28,9 @@ public final class ExpansionApi {
     private static final String THERMAL_MODID = "thermalexpansion";
     private static final String ENDERIO_MODID = "enderio";
     private static final String IE_MODID = "immersiveengineering";
+
+    private static final String MEKANISM_MODID = "mekanism";
+    private static final String MEKANISM_RECIPE_HANDLER = "mekanism.common.recipe.RecipeHandler";
 
     private static final String PULVERIZER = "cofh.thermalexpansion.util.managers.machine.PulverizerManager";
     private static final String SMELTER = "cofh.thermalexpansion.util.managers.machine.SmelterManager";
@@ -166,6 +170,29 @@ public final class ExpansionApi {
         }));
         root.set("ie", ie);
 
+        boolean mekanismLoaded = Loader.isModLoaded(MEKANISM_MODID);
+        LuaValue mekanism = LuaValue.tableOf();
+
+        mekanism.set("crusher", machine(mekanismLoaded, "Mekanism", args -> {
+            ItemStack output = stack(args.arg(1));
+            List<ItemStack> inputs = inputStacks(args.arg(2), "mekanism.crusher");
+            queue("mekanism crusher " + name(output), () -> mekanismCrusher(output, inputs));
+        }));
+
+        mekanism.set("enrichment_chamber", machine(mekanismLoaded, "Mekanism", args -> {
+            ItemStack output = stack(args.arg(1));
+            List<ItemStack> inputs = inputStacks(args.arg(2), "mekanism.enrichment_chamber");
+            queue("mekanism enrichment chamber " + name(output), () -> mekanismEnrichmentChamber(output, inputs));
+        }));
+
+        mekanism.set("smelter", machine(mekanismLoaded, "Mekanism", args -> {
+            ItemStack output = stack(args.arg(1));
+            List<ItemStack> inputs = inputStacks(args.arg(2), "mekanism.smelter");
+            queue("mekanism smelter " + name(output), () -> mekanismSmelter(output, inputs));
+        }));
+
+        root.set("mekanism", mekanism);
+
         g.set("moonexpansion", root);
     }
 
@@ -277,6 +304,30 @@ public final class ExpansionApi {
             throw new IllegalStateException("Ender IO classes not found", e);
         } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException | InstantiationException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    private static void mekanismCrusher(ItemStack output, List<ItemStack> inputs) {
+        for (ItemStack input : inputs) {
+            invokeStatic(MEKANISM_RECIPE_HANDLER, "addCrusherRecipe", input, output);
+        }
+    }
+
+    private static void mekanismEnrichmentChamber(ItemStack output, List<ItemStack> inputs) {
+        for (ItemStack input : inputs) {
+            invokeStatic(MEKANISM_RECIPE_HANDLER, "addEnrichmentChamberRecipe", input, output);
+        }
+    }
+
+    private static void mekanismSmelter(ItemStack output, List<ItemStack> inputs) {
+        for (ItemStack input : inputs) {
+            // Coba panggil addSmelterRecipe; jika gagal, fallback ke furnace vanilla
+            try {
+                invokeStatic(MEKANISM_RECIPE_HANDLER, "addSmelterRecipe", input, output);
+            } catch (Exception e) {
+                // Fallback: daftarkan sebagai resep furnace vanilla
+                FurnaceRecipes.instance().addSmeltingRecipe(input, output, 0.0F);
+            }
         }
     }
 

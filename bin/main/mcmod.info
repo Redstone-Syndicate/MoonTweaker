@@ -1,0 +1,16 @@
+[
+  {
+    "modid": "moontweaker",
+    "name": "MoonTweaker",
+    "description": "All-in-one server-side Lua scripting for Minecraft 1.12.2: recipes, loot tables, content registration and machine recipes in one mod.",
+    "version": "0.1.0",
+    "mcversion": "1.12.2",
+    "authorList": ["Kartendsy"],
+    "url": "",
+    "updateUrl": "",
+    "credits": "Kartendsy",
+    "logoFile": "logo.png",
+    "screenshots": [],
+    "dependencies": []
+  }
+]
