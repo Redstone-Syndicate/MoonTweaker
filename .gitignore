@@ -4,3 +4,8 @@ run/
 out/
 .idea/
 *.iml
+
+# Docusaurus
+website/node_modules/
+website/build/
+website/.docusaurus/

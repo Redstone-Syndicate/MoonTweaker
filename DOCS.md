@@ -22,14 +22,15 @@ quick-start, see [README.md](README.md).
 10. [Registry API](#10-registry-api)
 11. [Machine recipe API](#11-machine-recipe-api)
 12. [Event API](#12-event-api)
-13. [Commands](#13-commands)
-14. [Logging and diagnostics](#14-logging-and-diagnostics)
-15. [Architecture and internals](#15-architecture-and-internals)
-16. [Building and development](#16-building-and-development)
-17. [Error reference](#17-error-reference)
-18. [Limitations](#18-limitations)
-19. [Troubleshooting and FAQ](#19-troubleshooting-and-faq)
-20. [License and credits](#20-license-and-credits)
+13. [Advancement API](#13-advancement-api)
+14. [Commands](#14-commands)
+15. [Logging and diagnostics](#15-logging-and-diagnostics)
+16. [Architecture and internals](#16-architecture-and-internals)
+17. [Building and development](#17-building-and-development)
+18. [Error reference](#18-error-reference)
+19. [Limitations](#19-limitations)
+20. [Troubleshooting and FAQ](#20-troubleshooting-and-faq)
+21. [License and credits](#21-license-and-credits)
 
 ---
 
@@ -45,11 +46,11 @@ changing Minecraft server behaviour without writing Java or Kotlin:
 | Content | `registry` | Register items, blocks, tools, armor and fluids |
 | Machines | `moonexpansion` | Add Thermal Expansion, Ender IO and Immersive Engineering recipes |
 | Events | `events` | React to login, block break/place, entity death, item use and server ticks |
+| Advancements | `advancement` | Define custom advancements in Lua (Triumph-style), synced to clients |
 | Utilities | `item`, `ore`, `log`, `print`, `require`, `os` | Item helpers, logging, module loading and a restricted clock |
 
-The mod is implemented in **Kotlin**, runs on **Forgelin-Continuous**, and embeds
-the **LuaJ 3.0.1** runtime. It has no Mixins, no coremod and does not patch
-Minecraft classes. Minecraft content is manipulated through ordinary Forge
+The mod is implemented in **Java 8** and embeds the **LuaJ 3.0.1** runtime. It
+has no Mixins, no coremod and does not patch Minecraft classes. Minecraft content is manipulated through ordinary Forge
 registries and events.
 
 ### Design goals
@@ -71,7 +72,7 @@ print(msg)                 log.info(msg)  log.warn(msg)  log.error(msg)
 item("mod:item:meta")      ore("ingotIron")               require("module.name")
 
 -- Always installed, but stage-appropriate use is required
-recipes.*                  loot.*            events.*
+recipes.*                  loot.*            events.*          advancement.*
 moonexpansion.*            registry.*        -- registry only works in registry stage
 ```
 
@@ -85,7 +86,6 @@ The exact stage rules are in [§5.3](#53-stage-capability-matrix).
 |---|---|
 | Minecraft | 1.12.2 |
 | Forge | 14.23.5.2847 or newer |
-| Forgelin-Continuous | 2.x, required at runtime (`required-after:forgelin`) |
 | Java | 8 |
 | Lua | 5.2 syntax (LuaJ 3.0.1) |
 
@@ -115,20 +115,18 @@ may fail with a logged error.
 ## 3. Installation
 
 1. Install Minecraft Forge 1.12.2.
-2. Put `Forgelin-Continuous-<version>.jar` in `mods/`.
-3. Put `MoonTweaker-<version>.jar` in `mods/`.
-4. Start the game or server once.
+2. Put `MoonTweaker-<version>.jar` in `mods/`.
+3. Start the game or server once.
    MoonTweaker creates `lua_scripts/registry/`, `lua_scripts/server/` and
    `lua_scripts/startup/` next to the `config/` directory.
-5. Add `.lua` files to the appropriate stage folder.
-6. Restart, or use `/moontweaker reload` for server-stage scripts.
+4. Add `.lua` files to the appropriate stage folder.
+5. Restart, or use `/moontweaker reload` for server-stage scripts.
 
 Installed layout (single-player or client):
 
 ```
 .minecraft/
   mods/
-    Forgelin-Continuous-<version>.jar
     MoonTweaker-<version>.jar
   config/
   lua_scripts/
@@ -142,7 +140,6 @@ Dedicated server:
 ```
 server/
   mods/
-    Forgelin-Continuous-<version>.jar
     MoonTweaker-<version>.jar
   config/
   lua_scripts/
@@ -237,8 +234,9 @@ lua_scripts/
 | 5 | `FMLPostInitializationEvent` | Load `startup/` | `startup/` |
 | 6 | `FMLLoadCompleteEvent` | Apply queued machine recipes | — |
 | 7 | `FMLServerStartingEvent` | Register `/moontweaker` | — |
-| 8 | `LootTableLoadEvent` (per table) | Apply queued loot operations | — |
-| 9 | Runtime | Dispatch gameplay events | — |
+| 8 | `FMLServerStartedEvent` | Apply queued advancements | — |
+| 9 | `LootTableLoadEvent` (per table) | Apply queued loot operations | — |
+| 10 | Runtime | Dispatch gameplay events | — |
 
 Important consequences:
 
@@ -260,6 +258,7 @@ Important consequences:
 | `recipes.*` | Not supported | Yes | After registry lock; not supported |
 | `loot.*` | Queued, then discarded | Yes | Yes |
 | `moonexpansion.*` | Error | Queued | Queued |
+| `advancement.*` | Queued, then discarded | Yes | Queued (applied at server start) |
 | `events.on` | Cleared when `server/` loads | Yes | Yes |
 | `require` | Yes (relative to `registry/`) | Yes (relative to `server/`) | Yes (relative to `startup/`) |
 
@@ -1101,7 +1100,7 @@ unknown block material '<name>'
 ```
 
 Limitations: no blockstate/model generation, no tile entity, no custom harvest
-level or drops. See [§18](#18-limitations).
+level or drops. See [§19](#19-limitations).
 
 ### 10.5 `registry.tool(kind, material, opts)`
 
@@ -1741,7 +1740,191 @@ listeners.
 
 ---
 
-## 13. Commands
+## 13. Advancement API
+
+Custom advancements, Triumph-style, defined entirely in Lua. The definition
+table is converted to vanilla advancement JSON, validated with vanilla's own
+parser, written to `<world>/data/advancements/<namespace>/<path>.json`, and
+loaded through the vanilla `AdvancementManager` — which also syncs the
+advancements to clients. Use it from `lua_scripts/server/` (also queued from
+`startup/`).
+
+### 13.1 `advancement.add(id, definition)`
+
+`id` is a resource location, e.g. `"mymod:story/get_diamond"`. `definition`
+mirrors the vanilla advancement JSON:
+
+| Field | Type | Notes |
+|---|---|---|
+| `parent` | string | Optional parent id, e.g. `"minecraft:story/root"`. Omit for a root |
+| `display` | table | Optional; omit for an invisible advancement |
+| `display.icon` | string or table | String shorthand `"minecraft:diamond"` is expanded to `{ item = "minecraft:diamond" }` |
+| `display.title` / `display.description` | string or table | Text component (string or JSON component) |
+| `display.frame` | string | `"task"`, `"goal"` or `"challenge"` |
+| `display.background` | string | Texture path; root advancements only |
+| `display.show_toast` / `hidden` / `announce_to_chat` | boolean | Defaults: true / false / true |
+| `criteria` | table | Map of criterion name → `{ trigger = "minecraft:...", conditions = { ... } }`. Required, non-empty |
+| `requirements` | array of arrays | Optional; defaults to every criterion on its own |
+| `rewards` | table | Optional pass-through: `experience`, `loot`, `recipes`, `function` |
+
+`criteria` conditions are passed through to the vanilla trigger unchanged, so
+any vanilla trigger works, e.g. `minecraft:inventory_changed`,
+`minecraft:player_killed_entity`, `minecraft:enter_block`, etc. Unknown
+trigger names or malformed definitions raise a script error at load time
+(visible in `/moontweaker errors`), not at apply time.
+
+Example:
+
+```lua
+advancement.add("mymod:root", {
+  display = {
+    icon = "minecraft:diamond",
+    title = "Diamonds!",
+    description = "Get a diamond",
+    frame = "task",
+    background = "minecraft:textures/gui/advancements/backgrounds/stone.png", -- root only
+  },
+  criteria = {
+    got_diamond = {
+      trigger = "minecraft:inventory_changed",
+      conditions = { items = { { item = "minecraft:diamond" } } },
+    },
+  },
+})
+
+advancement.add("mymod:more", {
+  parent = "mymod:root",
+  display = { icon = "minecraft:emerald", title = "More!", description = "Get an emerald", frame = "goal" },
+  criteria = {
+    got_emerald = {
+      trigger = "minecraft:inventory_changed",
+      conditions = { items = { { item = "minecraft:emerald" } } },
+    },
+  },
+  rewards = { experience = 100 },
+})
+```
+
+### 13.2 `advancement.remove(id)`
+
+Queues removal of a script-defined advancement. On the next apply the
+generated JSON file is deleted.
+
+### 13.3 `advancement.removeVanillaAdvancement(id)`
+
+Hides one advancement that comes from vanilla or another mod. MoonTweaker
+writes a same-id "tombstone" file under `<world>/data/advancements/`; vanilla
+loads that file instead of the original, so the advancement disappears from
+the GUI and can no longer be completed. Removing the call restores the
+original on the next apply.
+
+Alias: `advancement.remove_vanilla(id)`.
+
+### 13.4 `advancement.removeVanillaTree(id)`
+
+Hides an entire tree: the given root and every descendant. Use it to replace a
+whole vanilla tab, for example:
+
+```lua
+advancement.removeVanillaTree("minecraft:story/root")
+advancement.removeVanillaTree("minecraft:nether/root")
+advancement.removeVanillaTree("minecraft:end/root")
+advancement.removeVanillaTree("minecraft:adventure/root")
+advancement.removeVanillaTree("minecraft:husbandry/root")
+```
+
+Alias: `advancement.remove_vanilla_tree(id)`.
+
+### 13.5 `advancement.removeAllVanilla()`
+
+Hides every advancement in the `minecraft` namespace in one call. This is the
+Triumph-style "replace vanilla completely" switch: call it, then define your
+own roots with `advancement.add`. Custom advancements always win over a
+tombstone, so you can also reuse a vanilla id for a replacement.
+
+Alias: `advancement.remove_all_vanilla()`.
+
+> **Warning:** hiding an advancement drops its saved progress when player data
+> is saved. This is destructive for existing worlds; back up `playerdata/` or
+> use it on a fresh world.
+
+Only the `minecraft` namespace is removed. Advancements from other mods stay
+loaded; if one is a child of a removed vanilla root, its tab disappears with
+that root. Give such advancements their own root (or remove them explicitly)
+if you want them visible in a fully custom tree.
+
+To reskin a vanilla tab while keeping its children, simply define a custom
+advancement with the same id as the vanilla root and omit the removal call:
+
+```lua
+advancement.add("minecraft:story/root", {
+  display = {
+    icon = "minecraft:book",
+    title = "My Story",
+    description = "The vanilla story tab, restyled.",
+    frame = "task",
+    background = "minecraft:textures/gui/advancements/backgrounds/stone.png",
+  },
+  criteria = { start = { trigger = "minecraft:tick" } },
+})
+```
+
+The vanilla children still point at `minecraft:story/root`, so they remain
+attached to the replacement root.
+
+### 13.6 When advancements apply
+
+- Definitions and removals are queued while `server/` (and `startup/`) scripts
+  run. `server/` is the reloadable stage: its definitions override `startup/`
+  for the same id, and `/moontweaker reload` re-runs only `server/`.
+  `startup/` definitions and removals are kept across reloads.
+- Applied at `FMLServerStartedEvent` and on every `/moontweaker reload`:
+  JSON files are written under `<world>/data/advancements/`, stale generated
+  files and tombstones are removed (tracked via the `.moontweaker` and
+  `.moontweaker-vanilla` manifests in that folder), then
+  `AdvancementManager.reload()` runs and online players are resynced.
+- Vanilla `/reload` re-reads the same files, so script advancements and
+  tombstones survive it.
+- Progress for a custom advancement is kept when its definition is rewritten,
+  because the id and criteria stay the same. Progress for an advancement that
+  is hidden by a tombstone is dropped by vanilla the next time player data is
+  saved; restoring the original later starts that advancement from zero.
+
+### 13.7 Replacing the vanilla tree
+
+```lua
+advancement.removeAllVanilla()
+
+advancement.add("mypack:root", {
+  display = {
+    icon = "minecraft:crafting_table",
+    title = "My Pack",
+    description = "A completely custom advancement tree.",
+    frame = "task",
+    background = "minecraft:textures/gui/advancements/backgrounds/stone.png",
+  },
+  criteria = { start = { trigger = "minecraft:tick" } },
+})
+
+advancement.add("mypack:first", {
+  parent = "mypack:root",
+  display = { icon = "minecraft:iron_ingot", title = "First Steps", description = "Smelt some iron." },
+  criteria = {
+    iron = {
+      trigger = "minecraft:inventory_changed",
+      conditions = { items = { { item = "minecraft:iron_ingot" } } },
+    },
+  },
+})
+```
+
+`display.x` and `display.y` are accepted for JSON compatibility but are
+ignored by Minecraft 1.12.2: the client lays out each tree automatically from
+the parent/child relationships. Use `parent` to control the shape of the tree.
+
+---
+
+## 14. Commands
 
 | Command | Description |
 |---|---|
@@ -1777,7 +1960,7 @@ Tab completion suggests `reload` and `errors`.
 
 ---
 
-## 14. Logging and diagnostics
+## 15. Logging and diagnostics
 
 All messages use the `moontweaker` logger.
 
@@ -1804,27 +1987,28 @@ Recommended checks after editing scripts:
 
 ---
 
-## 15. Architecture and internals
+## 16. Architecture and internals
 
-### 15.1 Component map
+### 16.1 Component map
 
 | File | Responsibility |
 |---|---|
-| `MoonTweaker.kt` | `@Mod` entry point, constants, logger, `ScriptManager`, Forge event wiring |
-| `api/MoonTweakerApi.kt` | Tracks the currently loading stage (`registry`, `server`, `startup`) |
-| `script/ScriptManager.kt` | Directory discovery, sandboxed `Globals`, file execution, `require`, errors, reload |
-| `lua/RecipeApi.kt` | `item`, `recipes.remove/shaped/shapeless/smelting` |
-| `loot/LootApi.kt` | `loot.add/remove/clear`, operation queue, reflection-based table mutation |
-| `loot/LootTableHandler.kt` | `LootTableLoadEvent` → `LootApi.apply` |
-| `registry/RegistryApi.kt` | `registry.*` bindings and pending object lists |
-| `registry/RegistryHandler.kt` | `RegistryEvent.Register<Block/Item>` registration |
-| `expansion/ExpansionApi.kt` | `moonexpansion.*`, reflection calls, deferred apply |
-| `event/EventApi.kt` | Listener registry, context creation, dispatch, error isolation |
-| `event/GameplayEvents.kt` | Forge event subscribers and Lua context construction |
-| `event/RecipeRegistryHook.kt` | Loads `server/` at LOWEST priority during recipe registration |
-| `command/MoonTweakerCommand.kt` | `/moontweaker reload` and `/moontweaker errors` |
+| `MoonTweaker.java` | `@Mod` entry point, constants, logger, `ScriptManager`, Forge event wiring |
+| `api/MoonTweakerApi.java` | Tracks the currently loading stage (`registry`, `server`, `startup`) |
+| `script/ScriptManager.java` | Directory discovery, sandboxed `Globals`, file execution, `require`, errors, reload |
+| `lua/RecipeApi.java` | `item`, `recipes.remove/shaped/shapeless/smelting` |
+| `loot/LootApi.java` | `loot.add/remove/clear`, operation queue, reflection-based table mutation |
+| `loot/LootTableHandler.java` | `LootTableLoadEvent` → `LootApi.apply` |
+| `registry/RegistryApi.java` | `registry.*` bindings and pending object lists |
+| `registry/RegistryHandler.java` | `RegistryEvent.Register<Block/Item>` registration |
+| `expansion/ExpansionApi.java` | `moonexpansion.*`, reflection calls, deferred apply |
+| `advancement/AdvancementApi.java` | `advancement.add/remove`, Lua→JSON conversion, world advancement files, apply on server start/reload |
+| `event/EventApi.java` | Listener registry, context creation, dispatch, error isolation |
+| `event/GameplayEvents.java` | Forge event subscribers and Lua context construction |
+| `event/RecipeRegistryHook.java` | Loads `server/` at LOWEST priority during recipe registration |
+| `command/MoonTweakerCommand.java` | `/moontweaker reload` and `/moontweaker errors` |
 
-### 15.2 Lifecycle sequence
+### 16.2 Lifecycle sequence
 
 ```
 Forge preInit
@@ -1845,6 +2029,7 @@ RegistryEvent.Register<IRecipe> (LOWEST)
        ├─ EventApi.clear()
        ├─ LootApi.reset()
        ├─ ExpansionApi.reset()
+       ├─ AdvancementApi.reset()
        ├─ new Globals for server stage
        └─ execute lua_scripts/server/**
 
@@ -1859,6 +2044,9 @@ FMLLoadComplete
 Server starting
   └─ register /moontweaker
 
+Server started
+  └─ AdvancementApi.apply(server) — writes <world>/data/advancements/*.json and reloads the AdvancementManager
+
 Loot table load
   └─ LootApi.apply(name, table)
 
@@ -1866,7 +2054,7 @@ Gameplay
   └─ GameplayEvents → EventApi.emit
 ```
 
-### 15.3 ScriptManager
+### 16.3 ScriptManager
 
 Key state:
 
@@ -1897,7 +2085,7 @@ It then removes the dangerous globals (`luajava`, `io`, `package`, `debug`,
 Because `registry` is installed by `RegistryApi.install(g)` with a stage check,
 non-registry stages receive a table whose functions all raise a fixed error.
 
-### 15.4 RecipeApi
+### 16.4 RecipeApi
 
 - `recipes.remove` iterates `ForgeRegistries.RECIPES`, collects matching
   registry names, then removes each through the `ForgeRegistry` API.
@@ -1909,7 +2097,7 @@ non-registry stages receive a table whose functions all raise a fixed error.
 - Furnace recipes use `FurnaceRecipes.instance().addSmeltingRecipe`.
 - Invalid item IDs fail immediately during script execution.
 
-### 15.5 LootApi and LootTableHandler
+### 16.5 LootApi and LootTableHandler
 
 - Operations are kept in an ordered list (`ops`).
 - `add` stores a parsed item, count range, weight, quality and metadata.
@@ -1923,7 +2111,7 @@ non-registry stages receive a table whose functions all raise a fixed error.
 The implementation mutates Forge's internal lists through reflection because
 1.12.2 provides no public mutation API for pools and entries.
 
-### 15.6 RegistryApi and RegistryHandler
+### 16.6 RegistryApi and RegistryHandler
 
 - Pending items, blocks, tool materials and armor materials are module-level
   lists/maps.
@@ -1934,7 +2122,7 @@ The implementation mutates Forge's internal lists through reflection because
   at the item event. Items include ItemBlocks, buckets, tools and armor.
 - Duplicate Lua-side IDs are rejected before Forge sees them.
 
-### 15.7 ExpansionApi
+### 16.7 ExpansionApi
 
 - Builds the `moonexpansion` table for every stage.
 - `mods` booleans are computed with `Loader.isModLoaded`.
@@ -1944,7 +2132,7 @@ The implementation mutates Forge's internal lists through reflection because
 - Reflection helpers resolve classes by name and methods by name + parameter
   count; `InvocationTargetException` causes are unwrapped for readable logs.
 
-### 15.8 EventApi and GameplayEvents
+### 16.8 EventApi and GameplayEvents
 
 - Listeners are keyed by event name in a mutable map.
 - `context(onCancel)` creates a table with a `cancel` function; the supplied
@@ -1954,14 +2142,14 @@ The implementation mutates Forge's internal lists through reflection because
   fast path, builds the context and emits.
 - `server.tick` only fires on `Phase.END`.
 
-### 15.9 Threading
+### 16.9 Threading
 
 - All script execution and API calls happen on the server thread.
 - Gameplay events and loot table loads run on the server thread.
 - There are no background tasks or asynchronous queues.
 - A long-running script blocks the server.
 
-### 15.10 State reset summary
+### 16.10 State reset summary
 
 | State | Reset when |
 |---|---|
@@ -1970,15 +2158,16 @@ The implementation mutates Forge's internal lists through reflection because
 | Event listeners | `server` stage load (including reload) |
 | Loot operations and pool counter | `server` stage load (including reload) |
 | Machine operation queue | `server` stage load (including reload) |
+| Advancement definitions | `server` stage load (including reload) |
 | Machine `applied` flag | Never after first apply (restart required) |
 | Script errors | Reload command |
 | Recipe counter | Reload command |
 
 ---
 
-## 16. Building and development
+## 17. Building and development
 
-### 16.1 Build requirements
+### 17.1 Build requirements
 
 | Tool | Version |
 |---|---|
@@ -1986,12 +2175,11 @@ The implementation mutates Forge's internal lists through reflection because
 | Java compilation toolchain | 8 (auto-provisioned by Foojay) |
 | Gradle wrapper | 9.2.0 |
 | RetroFuturaGradle | 2.0.2 |
-| Kotlin Gradle plugin | 2.4.10 |
 
 The build downloads Minecraft and Forge artifacts on the first run, so an
 internet connection is required initially.
 
-### 16.2 Commands
+### 17.2 Commands
 
 ```bash
 ./gradlew build
@@ -2015,20 +2203,17 @@ The first server run requires accepting the EULA in `run/eula.txt`.
 Development scripts live in `run/lua_scripts/` when using `runServer` or
 `runClient`, because the run directory is the game directory.
 
-### 16.3 Build configuration
+### 17.3 Build configuration
 
 Key points from `build.gradle`:
 
 - `minecraft.mcVersion = '1.12.2'`
-- Java toolchain pinned to 8; Kotlin JVM target 8.
-- `Forgelin-Continuous:2.4.10.0` is a compile/runtime dependency.
+- Java toolchain pinned to 8.
 - `luaj-jse:3.0.1` is embedded into the jar via the `embed` configuration.
-- Kotlin stdlib is **not** bundled (`kotlin.stdlib.default.dependency=false`);
-  Forgelin provides it at runtime.
 - Signature files are excluded from the shaded jar.
 - `LICENSE` and `NOTICE` are included in the jar.
 
-### 16.4 Adding a new Lua API
+### 17.4 Adding a new Lua API
 
 1. Create an API object with an `install(g: Globals, ...)` method.
 2. Register functions on a Lua table and `g.set("<name>", table)`.
@@ -2039,7 +2224,7 @@ Key points from `build.gradle`:
    branch in `ScriptManager.load`.
 6. Document the API in this file and `README.md`.
 
-### 16.5 Adding a new event
+### 17.5 Adding a new event
 
 1. Add a subscriber in `GameplayEvents` with `@SubscribeEvent`.
 2. Check `EventApi.has("your.event")` before building context.
@@ -2048,7 +2233,7 @@ Key points from `build.gradle`:
 5. Add the event to the table in [§12.1](#121-event-list).
 6. Respect the server thread; do not block.
 
-### 16.6 Testing checklist
+### 17.6 Testing checklist
 
 Before shipping a script pack:
 
@@ -2067,9 +2252,9 @@ Before shipping a script pack:
 
 ---
 
-## 17. Error reference
+## 18. Error reference
 
-### 17.1 Script system
+### 18.1 Script system
 
 | Message | Cause | Fix |
 |---|---|---|
@@ -2080,7 +2265,7 @@ Before shipping a script pack:
 | `moonexpansion: machine recipes are applied at startup; restart the game` | Machine call after startup | Restart |
 | `MoonTweaker: <mod> is not installed` | Machine API for absent mod | Install mod or guard with `moonexpansion.mods.*` |
 
-### 17.2 Items and recipes
+### 18.2 Items and recipes
 
 | Message | Cause |
 |---|---|
@@ -2094,7 +2279,7 @@ Before shipping a script pack:
 | `shaped(): missing key 'X'` | Pattern character has no key |
 | `shapeless(): empty ingredient list` | Empty ingredient table |
 
-### 17.3 Loot
+### 18.3 Loot
 
 | Message | Cause |
 |---|---|
@@ -2107,7 +2292,7 @@ Before shipping a script pack:
 | `bad metadata in '<id>'` | Non-numeric metadata suffix |
 | `loot.remove(): expected item id` | Wrong removal argument |
 
-### 17.4 Registry
+### 18.4 Registry
 
 | Message | Cause |
 |---|---|
@@ -2121,7 +2306,7 @@ Before shipping a script pack:
 | `cannot create armor material '<name>'` | EnumHelper returned null |
 | `fluid '<id>' is already registered` | Fluid name already exists |
 
-### 17.5 Machine recipes
+### 18.5 Machine recipes
 
 | Message | Cause |
 |---|---|
@@ -2138,7 +2323,7 @@ Before shipping a script pack:
 | `value must be at least 1` | Energy/time/RF/tick below 1 |
 | `chance must be between 0 and 100` | Chance outside range |
 
-### 17.6 Apply-time failures (log only)
+### 18.6 Apply-time failures (log only)
 
 These do not appear in `/moontweaker errors`:
 
@@ -2146,12 +2331,13 @@ These do not appear in `/moontweaker errors`:
 MoonTweaker: failed to add thermal pulverizer <item>: recipe already exists
 MoonTweaker: failed to add <description>: <class or method not found>
 MoonTweaker: failed to change loot table <table>: <error>
+MoonTweaker: failed to apply advancements: <error>
 MoonTweaker: error in event '<name>': <error>
 ```
 
 ---
 
-## 18. Limitations
+## 19. Limitations
 
 ### Recipes
 
@@ -2203,6 +2389,15 @@ MoonTweaker: error in event '<name>': <error>
 - Listeners registered by `startup/` are lost on `/moontweaker reload`.
 - Callback errors are logged but not shown by `/moontweaker errors`.
 
+### Advancements
+
+- Applied only at server start and `/moontweaker reload`; no hot-apply mid-session.
+- Definitions are validated with vanilla's advancement parser at script load;
+  unknown triggers or malformed criteria are script errors.
+- Only vanilla's built-in criterion triggers are available.
+- Generated files live in `<world>/data/advancements/`; deleting them manually
+  without updating the manifest means they are re-created on next apply.
+
 ### Security and performance
 
 - No instruction budget or watchdog. Infinite loops hang the server.
@@ -2212,7 +2407,7 @@ MoonTweaker: error in event '<name>': <error>
 
 ---
 
-## 19. Troubleshooting and FAQ
+## 20. Troubleshooting and FAQ
 
 ### Scripts do not run
 
@@ -2223,10 +2418,6 @@ Check:
   `lua_scripts/startup/`.
 - The folder is next to `config/`, not inside it.
 - `/moontweaker errors` and the log for `stage '...' loaded`.
-
-### `ClassNotFoundException: io.github.chaosunity.forgelin.KotlinAdapter`
-
-Forgelin-Continuous is missing from `mods/`. Install a compatible version.
 
 ### `Attempted to register to late` / `Attempted to remove from the registry to late`
 
@@ -2306,7 +2497,7 @@ server. Only run scripts you trust.
 
 ---
 
-## 20. License and credits
+## 21. License and credits
 
 MoonTweaker is licensed under the **GNU General Public License v3.0 or later**.
 
@@ -2325,8 +2516,6 @@ be marked as modified, as required by section 5(a) of the license.
 
 - Author and copyright holder: **Kartendsy**
 - Lua runtime: [LuaJ](https://github.com/luaj/luaj)
-- Kotlin runtime for Forge 1.12.2:
-  [Forgelin-Continuous](https://github.com/ChAoSUnItY/Forgelin-Continuous)
 - Build toolchain:
   [RetroFuturaGradle](https://github.com/GTNewHorizons/RetroFuturaGradle)
 - Inspired by the scripting model of CraftTweaker and KubeJS
@@ -2334,4 +2523,4 @@ be marked as modified, as required by section 5(a) of the license.
 ---
 
 *Documentation for MoonTweaker 0.1.0. Behaviour described here reflects the
-source in `src/main/kotlin/com/moontweaker/`.*
+source in `src/main/java/com/moontweaker/`.*

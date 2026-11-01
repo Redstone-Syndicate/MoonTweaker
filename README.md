@@ -10,7 +10,7 @@ One mod handles crafting recipes, loot tables, content registration and machine 
 
 - **Language:** Lua 5.2 (LuaJ 3.0.1)
 - **Loader:** Forge 1.12.2
-- **Implementation:** Kotlin + Forgelin-Continuous
+- **Implementation:** Java 8
 - **Author:** Kartendsy
 
 ## Features
@@ -22,6 +22,7 @@ One mod handles crafting recipes, loot tables, content registration and machine 
 - Register items, material items, blocks, tools, armor and fluids from Lua.
 - Add machine recipes for Thermal Expansion, Ender IO and Immersive Engineering.
 - Gameplay events: player login, block break/place, entity death, item use, server tick.
+- Custom advancements defined in Lua (`advancement.add`), Triumph-style, synced to clients; vanilla advancements and whole trees can be hidden or fully replaced (`removeVanillaAdvancement`, `removeVanillaTree`, `removeAllVanilla`).
 - Recursive script loading with per-file error reporting.
 - Sandboxed Lua runtime: no filesystem, no Java reflection, no `os.execute`.
 - Module support with `require`.
@@ -33,7 +34,6 @@ One mod handles crafting recipes, loot tables, content registration and machine 
 |---|---|
 | Minecraft | 1.12.2 |
 | Forge | 14.23.5.2847 or newer |
-| Forgelin-Continuous | 2.x (required at runtime) |
 | Java | 8 |
 
 To build from source you additionally need **JDK 25** (Gradle 9.2 runs on it) and an internet connection for the first build.
@@ -41,10 +41,9 @@ To build from source you additionally need **JDK 25** (Gradle 9.2 runs on it) an
 ## Installation
 
 1. Install Minecraft Forge 1.12.2.
-2. Put `Forgelin-Continuous-<version>.jar` in `.minecraft/mods/`.
-3. Put `MoonTweaker-<version>.jar` in `.minecraft/mods/`.
-4. Start the game or server once. MoonTweaker creates `lua_scripts/` automatically.
-5. Add your scripts and restart, or run `/moontweaker reload` for server scripts.
+2. Put `MoonTweaker-<version>.jar` in `.minecraft/mods/`.
+3. Start the game or server once. MoonTweaker creates `lua_scripts/` automatically.
+4. Add your scripts and restart, or run `/moontweaker reload` for server scripts.
 
 Only one MoonTweaker jar is needed. All loot, registry and machine APIs are built in.
 
@@ -64,7 +63,7 @@ Build notes:
 
 - Gradle 9.2 or newer is required by RetroFuturaGradle 2.0.2.
 - Gradle must run on JDK 25. The Java 8 compilation toolchain is provisioned automatically by the Foojay resolver.
-- LuaJ is embedded in the mod jar; Kotlin stdlib is not bundled because Forgelin provides it.
+- LuaJ is embedded in the mod jar.
 - Thermal Expansion, Ender IO and Immersive Engineering are **not** compile-time dependencies. Their recipe managers are called by reflection.
 
 Run a development server or client:
@@ -79,26 +78,27 @@ On the first server run, accept the Minecraft EULA in `run/eula.txt`.
 ## Project layout
 
 ```
-build.gradle                          Gradle/RFG/Kotlin build
+build.gradle                          Gradle/RFG/Java build
 settings.gradle                       Plugin repositories
 assets/icon.svg                       Icon source (SVG)
 src/main/resources/logo.png           Rendered mod icon (256x256)
 src/main/resources/mcmod.info         Forge mod metadata
 src/main/resources/assets/moontweaker/lang/en_us.lang
 
-src/main/kotlin/com/moontweaker/
-  MoonTweaker.kt                      @Mod entry point and event wiring
-  api/MoonTweakerApi.kt               Current script stage
-  script/ScriptManager.kt             Script discovery, sandbox, require, errors
-  lua/RecipeApi.kt                    item/ore/crafting recipe bindings
-  loot/LootApi.kt                     loot table bindings
-  loot/LootTableHandler.kt            LootTableLoadEvent hook
-  registry/RegistryApi.kt             item/block/tool/armor/fluid bindings
-  registry/RegistryHandler.kt         RegistryEvent hooks
-  expansion/ExpansionApi.kt           machine recipe bindings
-  event/RecipeRegistryHook.kt         Loads server scripts before the registry locks
-  event/GameplayEvents.kt             Gameplay event bridge
-  command/MoonTweakerCommand.kt       /moontweaker command
+src/main/java/com/moontweaker/
+  MoonTweaker.java                    @Mod entry point and event wiring
+  api/MoonTweakerApi.java             Current script stage
+  script/ScriptManager.java           Script discovery, sandbox, require, errors
+  lua/RecipeApi.java                  item/ore/crafting recipe bindings
+  loot/LootApi.java                   loot table bindings
+  loot/LootTableHandler.java          LootTableLoadEvent hook
+  registry/RegistryApi.java           item/block/tool/armor/fluid bindings
+  registry/RegistryHandler.java       RegistryEvent hooks
+  expansion/ExpansionApi.java         machine recipe bindings
+  event/RecipeRegistryHook.java       Loads server scripts before the registry locks
+  event/GameplayEvents.java           Gameplay event bridge
+  advancement/AdvancementApi.java     Lua-defined custom advancements
+  command/MoonTweakerCommand.java     /moontweaker command
 
 lua_scripts/
   registry/                           Content registration, loaded at pre-init
@@ -821,9 +821,6 @@ Scripts run on the server thread. There is currently **no instruction budget or 
 
 ## Troubleshooting
 
-**`java.lang.ClassNotFoundException: io.github.chaosunity.forgelin.KotlinAdapter`**
-Forgelin-Continuous is missing from `mods/`. Install the version matching your Kotlin runtime.
-
 **`Attempted to remove from the registry to late` / `Attempted to register to late`**
 A script tried to change recipes after the registry locked. Move the code to `lua_scripts/server/` and restart the server. `/moontweaker reload` cannot bypass this Forge restriction.
 
@@ -863,7 +860,6 @@ be marked as modified, as required by section 5(a) of the license.
 
 - Author and copyright holder: **Kartendsy**
 - Lua runtime: [LuaJ](https://github.com/luaj/luaj)
-- Kotlin runtime for Forge 1.12.2: [Forgelin-Continuous](https://github.com/ChAoSUnItY/Forgelin-Continuous)
 - Build toolchain: [RetroFuturaGradle](https://github.com/GTNewHorizons/RetroFuturaGradle)
 
 Inspired by the scripting model of CraftTweaker and KubeJS.

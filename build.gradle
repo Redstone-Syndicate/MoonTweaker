@@ -1,6 +1,5 @@
 plugins {
     id 'java'
-    id 'org.jetbrains.kotlin.jvm' version '2.4.10'
     id 'com.gtnewhorizons.retrofuturagradle' version '2.0.2'
 }
 
@@ -11,10 +10,6 @@ java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(8)
     }
-}
-
-kotlin {
-    jvmToolchain(8)
 }
 
 minecraft {
@@ -33,7 +28,6 @@ configurations {
 }
 
 dependencies {
-    implementation 'io.github.chaosunity.forgelin:Forgelin-Continuous:2.4.10.0'
     implementation 'org.luaj:luaj-jse:3.0.1'
     embed 'org.luaj:luaj-jse:3.0.1'
 }
@@ -49,7 +43,7 @@ jar {
 }
 
 tasks.configureEach {
-    if (name == 'compileInjectedTagsKotlin' || name == 'compileInjectedTagsJava') {
+    if (name == 'compileInjectedTagsJava') {
         dependsOn 'injectTags'
     }
     if (name.startsWith('compilePatchedMc')) {
