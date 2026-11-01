@@ -1,7 +1,12 @@
 package com.moontweaker.script;
 
 import com.moontweaker.advancement.AdvancementApi;
+import com.moontweaker.advancement.AdvancementCallbacks;
+import com.moontweaker.api.ItemApi;
+import com.moontweaker.api.JsonApi;
 import com.moontweaker.api.MoonTweakerApi;
+import com.moontweaker.api.PlayerApi;
+import com.moontweaker.api.ServerApi;
 import com.moontweaker.event.EventApi;
 import com.moontweaker.expansion.ExpansionApi;
 import com.moontweaker.loot.LootApi;
@@ -36,10 +41,24 @@ public class ScriptManager {
     public static class ScriptError {
         public final String file;
         public final String message;
+        public final int line;
 
         public ScriptError(String file, String message) {
+            this(file, message, -1);
+        }
+
+        public ScriptError(String file, String message, int line) {
             this.file = file;
             this.message = message;
+            this.line = line;
+        }
+
+        @Override
+        public String toString() {
+            if (line > 0) {
+                return file + ":" + line + ": " + message;
+            }
+            return file + ": " + message;
         }
     }
 
@@ -99,6 +118,7 @@ public class ScriptManager {
                 LootApi.reset();
                 ExpansionApi.reset();
                 AdvancementApi.reset();
+                AdvancementCallbacks.clear();
                 break;
         }
         File dir = new File(scriptDir(), stage);
@@ -138,12 +158,26 @@ public class ScriptManager {
             globals.load(readFile(file), name).call();
             return true;
         } catch (LuaError e) {
-            errors.add(new ScriptError(name.substring(1), e.getMessage() != null ? e.getMessage() : "unknown Lua error"));
+            int line = extractLineNumber(e.getMessage());
+            errors.add(new ScriptError(name.substring(1), e.getMessage() != null ? e.getMessage() : "unknown Lua error", line));
             return false;
         } catch (Throwable e) {
             errors.add(new ScriptError(name.substring(1), e.toString()));
             return false;
         }
+    }
+
+    private int extractLineNumber(String errorMsg) {
+        if (errorMsg == null) return -1;
+        // LuaJ error format: "filename:line: message" or "filename:line: in function 'func' ... message"
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("@?[^:]+:(\\d+):");
+        java.util.regex.Matcher m = p.matcher(errorMsg);
+        if (m.find()) {
+            try {
+                return Integer.parseInt(m.group(1));
+            } catch (NumberFormatException ignored) {}
+        }
+        return -1;
     }
 
     private String readFile(File file) {
@@ -195,6 +229,11 @@ public class ScriptManager {
         RegistryApi.install(g);
         ExpansionApi.install(g);
         AdvancementApi.install(g);
+        AdvancementCallbacks.install(g, logger);
+        ServerApi.install(g, logger);
+        PlayerApi.install(g, logger);
+        ItemApi.install(g, logger);
+        JsonApi.install(g, logger);
         return g;
     }
 

@@ -8,9 +8,11 @@ import net.minecraft.block.Block;
 import net.minecraft.command.CommandException;
 import net.minecraft.command.ICommand;
 import net.minecraft.command.ICommandSender;
+import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.crafting.IRecipe;
+import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.text.TextComponentString;
@@ -18,7 +20,20 @@ import net.minecraftforge.fluids.Fluid;
 import net.minecraftforge.fluids.FluidRegistry;
 import net.minecraftforge.fml.common.registry.ForgeRegistries;
 import net.minecraftforge.oredict.OreDictionary;
+import org.luaj.vm2.Globals;
+import org.luaj.vm2.LoadState;
+import org.luaj.vm2.LuaError;
+import org.luaj.vm2.compiler.LuaC;
+import org.luaj.vm2.lib.BaseLib;
+import org.luaj.vm2.lib.Bit32Lib;
+import org.luaj.vm2.lib.CoroutineLib;
+import org.luaj.vm2.lib.PackageLib;
+import org.luaj.vm2.lib.StringLib;
+import org.luaj.vm2.lib.TableLib;
+import org.luaj.vm2.lib.jse.JseMathLib;
 
+import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -38,7 +53,7 @@ public class MoonTweakerCommand implements ICommand {
 
     @Override
     public String getUsage(ICommandSender sender) {
-        return "/moontweaker <reload|errors|dump>";
+        return "/moontweaker <reload|errors|dump|info|check|trace>";
     }
 
     @Override
@@ -79,6 +94,15 @@ public class MoonTweakerCommand implements ICommand {
                 break;
             case "dump":
                 handleDump(sender, args);
+                break;
+            case "info":
+                handleInfo(sender, server, args);
+                break;
+            case "check":
+                handleCheck(sender, args);
+                break;
+            case "trace":
+                handleTrace(sender, args);
                 break;
             default:
                 sender.sendMessage(new TextComponentString(getUsage(sender)));
@@ -194,6 +218,60 @@ public class MoonTweakerCommand implements ICommand {
         }
     }
 
+    private void handleInfo(ICommandSender sender, MinecraftServer server, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(new TextComponentString("/moontweaker info <held|player>"));
+            return;
+        }
+        if (!(sender instanceof EntityPlayerMP)) {
+            sender.sendMessage(new TextComponentString("This command must be run by a player"));
+            return;
+        }
+        EntityPlayerMP player = (EntityPlayerMP) sender;
+        String sub = args[1].toLowerCase();
+        switch (sub) {
+            case "held":
+                ItemStack held = player.getHeldItemMainhand();
+                if (held.isEmpty()) {
+                    sender.sendMessage(new TextComponentString("Tidak memegang item"));
+                    return;
+                }
+                String id = held.getItem().getRegistryName() != null ? held.getItem().getRegistryName().toString() : "unknown";
+                sender.sendMessage(new TextComponentString("=== Item di Tangan ==="));
+                sender.sendMessage(new TextComponentString("ID: " + id));
+                sender.sendMessage(new TextComponentString("Count: " + held.getCount()));
+                sender.sendMessage(new TextComponentString("Meta/Damage: " + held.getMetadata()));
+                sender.sendMessage(new TextComponentString("Max Stack: " + held.getMaxStackSize()));
+                sender.sendMessage(new TextComponentString("Display Name: " + held.getDisplayName()));
+                if (held.hasTagCompound()) {
+                    NBTTagCompound tag = held.getTagCompound();
+                    sender.sendMessage(new TextComponentString("NBT: " + tag.toString()));
+                }
+                // Ore dict
+                int[] oreIds = OreDictionary.getOreIDs(held);
+                if (oreIds.length > 0) {
+                    StringBuilder sb = new StringBuilder("Ore Dict: ");
+                    for (int i = 0; i < oreIds.length; i++) {
+                        if (i > 0) sb.append(", ");
+                        sb.append(OreDictionary.getOreName(oreIds[i]));
+                    }
+                    sender.sendMessage(new TextComponentString(sb.toString()));
+                }
+                break;
+            case "player":
+                sender.sendMessage(new TextComponentString("=== Player Info ==="));
+                sender.sendMessage(new TextComponentString("Name: " + player.getName()));
+                sender.sendMessage(new TextComponentString("UUID: " + player.getUniqueID()));
+                sender.sendMessage(new TextComponentString("Pos: " + (int)player.posX + ", " + (int)player.posY + ", " + (int)player.posZ));
+                sender.sendMessage(new TextComponentString("Dim: " + player.dimension));
+                sender.sendMessage(new TextComponentString("Health: " + player.getHealth() + "/" + player.getMaxHealth()));
+                sender.sendMessage(new TextComponentString("Gamemode: " + player.interactionManager.getGameType().getName()));
+                break;
+            default:
+                sender.sendMessage(new TextComponentString("Unknown info type: " + sub + ". Use: held, player"));
+        }
+    }
+
     private int parseInt(String s, int fallback) {
         try {
             return Integer.parseInt(s);
@@ -202,23 +280,122 @@ public class MoonTweakerCommand implements ICommand {
         }
     }
 
+    private void handleCheck(ICommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(new TextComponentString("/moontweaker check <file.lua>"));
+            return;
+        }
+        String fileName = args[1];
+        File scriptDir = scripts.scriptDir();
+        File file = new File(scriptDir, fileName);
+        if (!file.isFile()) {
+            sender.sendMessage(new TextComponentString("File not found: " + file.getAbsolutePath()));
+            return;
+        }
+        try {
+            String content = new String(java.nio.file.Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+            Globals g = new Globals();
+            g.load(new org.luaj.vm2.lib.BaseLib());
+            g.load(new org.luaj.vm2.lib.PackageLib());
+            g.load(new org.luaj.vm2.lib.Bit32Lib());
+            g.load(new org.luaj.vm2.lib.TableLib());
+            g.load(new org.luaj.vm2.lib.StringLib());
+            g.load(new org.luaj.vm2.lib.CoroutineLib());
+            g.load(new org.luaj.vm2.lib.jse.JseMathLib());
+            org.luaj.vm2.LoadState.install(g);
+            org.luaj.vm2.compiler.LuaC.install(g);
+            
+            // Load and compile only - don't execute
+            org.luaj.vm2.LuaValue chunk = g.load(content, "@" + fileName);
+            sender.sendMessage(new TextComponentString("§aSyntax OK: " + fileName));
+            sender.sendMessage(new TextComponentString("§7Chunk: " + chunk.tojstring()));
+        } catch (org.luaj.vm2.LuaError e) {
+            sender.sendMessage(new TextComponentString("§cSyntax Error: " + e.getMessage()));
+        } catch (Exception e) {
+            sender.sendMessage(new TextComponentString("§cError: " + e.getMessage()));
+        }
+    }
+
+    private void handleTrace(ICommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(new TextComponentString("/moontweaker trace <on|off>"));
+            return;
+        }
+        String mode = args[1].toLowerCase();
+        if ("on".equals(mode)) {
+            MoonTweaker.LOGGER.info("MoonTweaker: Trace mode enabled (verbose logging)");
+            // Could set a static flag in ScriptManager
+            sender.sendMessage(new TextComponentString("§aTrace mode ON"));
+        } else if ("off".equals(mode)) {
+            MoonTweaker.LOGGER.info("MoonTweaker: Trace mode disabled");
+            sender.sendMessage(new TextComponentString("§7Trace mode OFF"));
+        } else {
+            sender.sendMessage(new TextComponentString("Usage: /moontweaker trace <on|off>"));
+        }
+    }
+
     @Override
     public List<String> getTabCompletions(MinecraftServer server, ICommandSender sender, String[] args, BlockPos targetPos) {
         if (args.length == 1) {
             List<String> completions = new java.util.ArrayList<>();
-            for (String cmd : Arrays.asList("reload", "errors", "dump")) {
+            for (String cmd : Arrays.asList("reload", "errors", "dump", "info")) {
                 if (cmd.startsWith(args[0])) completions.add(cmd);
             }
             return completions;
         }
-        if (args.length == 2 && "dump".equals(args[0])) {
-            List<String> completions = new java.util.ArrayList<>();
-            for (String type : Arrays.asList("items", "blocks", "fluids", "recipes", "ores", "registry")) {
-                if (type.startsWith(args[1])) completions.add(type);
+        if (args.length == 2) {
+            if ("dump".equals(args[0])) {
+                List<String> completions = new java.util.ArrayList<>();
+                for (String type : Arrays.asList("items", "blocks", "fluids", "recipes", "ores", "registry")) {
+                    if (type.startsWith(args[1])) completions.add(type);
+                }
+                return completions;
             }
+            if ("info".equals(args[0])) {
+                List<String> completions = new java.util.ArrayList<>();
+                for (String type : Arrays.asList("held", "player")) {
+                    if (type.startsWith(args[1])) completions.add(type);
+                }
+                return completions;
+            }
+            if ("trace".equals(args[0])) {
+                List<String> completions = new java.util.ArrayList<>();
+                for (String type : Arrays.asList("on", "off")) {
+                    if (type.startsWith(args[1])) completions.add(type);
+                }
+                return completions;
+            }
+            if ("check".equals(args[0])) {
+                // List .lua files in script dir
+                File scriptDir = scripts.scriptDir();
+                List<String> completions = new java.util.ArrayList<>();
+                collectLuaFiles(scriptDir, completions, "");
+                for (String type : completions) {
+                    if (type.startsWith(args[1])) completions.add(type);
+                }
+                return completions;
+            }
+        }
+        if (args.length == 3 && "check".equals(args[0])) {
+            // Subdirectory completion
+            File scriptDir = scripts.scriptDir();
+            List<String> completions = new java.util.ArrayList<>();
+            collectLuaFiles(scriptDir, completions, args[1] + "/");
             return completions;
         }
         return Collections.emptyList();
+    }
+
+    private void collectLuaFiles(File dir, List<String> out, String prefix) {
+        File[] children = dir.listFiles();
+        if (children == null) return;
+        for (File child : children) {
+            if (child.isFile() && child.getName().endsWith(".lua")) {
+                out.add(prefix + child.getName());
+            } else if (child.isDirectory()) {
+                collectLuaFiles(child, out, prefix + child.getName() + "/");
+            }
+        }
     }
 
     @Override

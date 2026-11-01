@@ -14,17 +14,23 @@ import net.minecraft.item.ItemBucket;
 import net.minecraft.item.ItemHoe;
 import net.minecraft.item.ItemPickaxe;
 import net.minecraft.item.ItemSpade;
+import net.minecraft.item.ItemStack;
 import net.minecraft.item.ItemSword;
 import net.minecraft.util.ResourceLocation;
 import net.minecraftforge.common.util.EnumHelper;
 import net.minecraftforge.fluids.BlockFluidClassic;
 import net.minecraftforge.fluids.Fluid;
 import net.minecraftforge.fluids.FluidRegistry;
+import net.minecraftforge.event.furnace.FurnaceFuelBurnTimeEvent;
+import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
+import net.minecraftforge.fml.common.registry.ForgeRegistries;
+import net.minecraftforge.oredict.OreDictionary;
 import org.luaj.vm2.Globals;
 import org.luaj.vm2.LuaError;
 import org.luaj.vm2.LuaValue;
 import org.luaj.vm2.Varargs;
 import org.luaj.vm2.lib.OneArgFunction;
+import org.luaj.vm2.lib.TwoArgFunction;
 import org.luaj.vm2.lib.VarArgFunction;
 
 import java.util.*;
@@ -41,6 +47,7 @@ public final class RegistryApi {
     private static final List<Block> blocks = new ArrayList<>();
     private static final Map<String, Item.ToolMaterial> toolMaterials = new HashMap<>();
     private static final Map<String, ItemArmor.ArmorMaterial> armorMaterials = new HashMap<>();
+    private static final Map<String, Integer> customFuels = new HashMap<>();
 
     private static final List<Map.Entry<String, EntityEquipmentSlot>> ARMOR_PIECES = Arrays.asList(
         new AbstractMap.SimpleEntry<>("helmet", EntityEquipmentSlot.HEAD),
@@ -113,6 +120,37 @@ public final class RegistryApi {
             @Override
             public Varargs invoke(Varargs args) {
                 addFluid(args.arg(1).checkjstring(), options(args.arg(2)));
+                return LuaValue.NIL;
+            }
+        });
+        // Priority 5: ore dict registration
+        registry.set("oreDict", new VarArgFunction() {
+            @Override
+            public Varargs invoke(Varargs args) {
+                String oreName = args.arg(1).checkjstring();
+                String itemId = args.arg(2).checkjstring();
+                int meta = args.arg(3).optint(0);
+                addOreDict(oreName, itemId, meta);
+                return LuaValue.NIL;
+            }
+        });
+        // Priority 5: fuel values
+        registry.set("fuel", new VarArgFunction() {
+            @Override
+            public Varargs invoke(Varargs args) {
+                String itemId = args.arg(1).checkjstring();
+                int burnTime = args.arg(2).checkint();
+                int meta = args.arg(3).optint(0);
+                addFuel(itemId, burnTime, meta);
+                return LuaValue.NIL;
+            }
+        });
+        // Priority 5: batch API for bulk registration
+        registry.set("batch", new VarArgFunction() {
+            @Override
+            public Varargs invoke(Varargs args) {
+                LuaValue items = args.arg(1).checktable();
+                doBatch(items);
                 return LuaValue.NIL;
             }
         });
@@ -241,6 +279,70 @@ public final class RegistryApi {
         items.add(bucket);
 
         FluidRegistry.addBucketForFluid(fluid);
+    }
+
+    // Priority 5 #15: Custom ore dictionary registration
+    private static void addOreDict(String oreName, String itemId, int meta) {
+        Item item = ForgeRegistries.ITEMS.getValue(new ResourceLocation(itemId));
+        if (item == null) {
+            throw new LuaError("item not found: " + itemId);
+        }
+        ItemStack stack = new ItemStack(item, 1, meta);
+        OreDictionary.registerOre(oreName, stack);
+    }
+
+    // Priority 5 #16: Fuel values
+    private static void addFuel(String itemId, int burnTime, int meta) {
+        Item item = ForgeRegistries.ITEMS.getValue(new ResourceLocation(itemId));
+        if (item == null) {
+            throw new LuaError("item not found: " + itemId);
+        }
+        String key = itemId + ":" + meta;
+        customFuels.put(key, burnTime);
+    }
+
+    // Event handler for custom fuel values
+    @SubscribeEvent
+    public static void onFuelBurnTime(FurnaceFuelBurnTimeEvent event) {
+        ItemStack stack = event.getItemStack();
+        if (stack.isEmpty()) return;
+        String key = stack.getItem().getRegistryName().toString() + ":" + stack.getMetadata();
+        Integer burnTime = customFuels.get(key);
+        if (burnTime != null) {
+            event.setBurnTime(burnTime);
+        }
+    }
+
+    // Priority 5 #18: Batch API for bulk registration
+    private static void doBatch(LuaValue items) {
+        LuaValue[] keys = items.checktable().keys();
+        for (LuaValue key : keys) {
+            LuaValue def = items.get(key);
+            if (!def.istable()) continue;
+            String type = def.get("type").optjstring("");
+            String name = key.tojstring();
+            LuaValue opts = def.get("options").isnil() ? LuaValue.tableOf() : def.get("options");
+            switch (type) {
+                case "item":
+                    addItem(name, opts);
+                    break;
+                case "block":
+                    addBlock(name, opts);
+                    break;
+                case "tool":
+                    String mat = def.get("material").checkjstring();
+                    addTool(name, mat, opts);
+                    break;
+                case "armor":
+                    addArmor(name, opts);
+                    break;
+                case "fluid":
+                    addFluid(name, opts);
+                    break;
+                default:
+                    throw new LuaError("batch: unknown type '" + type + "' for " + name);
+            }
+        }
     }
 
     private static Item.ToolMaterial toolMaterial(String name, LuaValue opts) {

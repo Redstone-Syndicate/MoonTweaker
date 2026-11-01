@@ -6,6 +6,7 @@ import com.moontweaker.event.GameplayEvents;
 import com.moontweaker.event.RecipeRegistryHook;
 import com.moontweaker.expansion.ExpansionApi;
 import com.moontweaker.loot.LootTableHandler;
+import com.moontweaker.registry.RegistryApi;
 import com.moontweaker.registry.RegistryHandler;
 import com.moontweaker.script.ScriptManager;
 import net.minecraftforge.common.MinecraftForge;
@@ -28,7 +29,7 @@ public class MoonTweaker {
 
     public static final String MODID = "moontweaker";
     public static final String NAME = "MoonTweaker";
-    public static final String VERSION = "0.1.0";
+    public static final String VERSION = "0.3.0";
 
     public static final Logger LOGGER = LogManager.getLogger(MODID);
     public static final ScriptManager SCRIPTS = new ScriptManager(LOGGER);
@@ -40,6 +41,7 @@ public class MoonTweaker {
         MinecraftForge.EVENT_BUS.register(new LootTableHandler(LOGGER));
         MinecraftForge.EVENT_BUS.register(new RecipeRegistryHook(SCRIPTS));
         MinecraftForge.EVENT_BUS.register(new GameplayEvents());
+        MinecraftForge.EVENT_BUS.register(RegistryApi.class);
     }
 
     @Mod.EventHandler

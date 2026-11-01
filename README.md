@@ -6,7 +6,7 @@
 
 All-in-one server-side Lua scripting for **Minecraft 1.12.2 / Forge**, inspired by CraftTweaker and KubeJS.
 
-One mod handles crafting recipes, loot tables, content registration and machine recipes. You do not need separate LunarLoot, MoonRegistry or MoonExpansion jars.
+One mod handles crafting recipes, loot tables, content registration, machine recipes, **custom advancements**, **gameplay events**, **server commands**, **JSON/NBT utilities**, and **modular scripting**. You do not need separate LunarLoot, MoonRegistry or MoonExpansion jars.
 
 - **Language:** Lua 5.2 (LuaJ 3.0.1)
 - **Loader:** Forge 1.12.2
@@ -20,12 +20,24 @@ One mod handles crafting recipes, loot tables, content registration and machine 
 - Add shaped, shapeless and furnace recipes.
 - Rewrite loot tables: add weighted entries, remove items and clear tables.
 - Register items, material items, blocks, tools, armor and fluids from Lua.
+- **Custom ore dictionary registration** (`registry.oreDict`) and **fuel values** (`registry.fuel`).
+- **Batch registration** (`registry.batch`) for bulk item/block/tool/armor/fluid creation.
 - Add machine recipes for Thermal Expansion, Ender IO and Immersive Engineering.
-- Gameplay events: player login, block break/place, entity death, item use, server tick.
+- **Extended gameplay events**: `player.logged_in`, `player.logged_out`, `player.death`, `player.dimension_change`, `player.craft`, `block.break`, `block.place`, `block.interact`, `item.pickup`, `item.right_click`, `item.use`, `entity.spawn`, `entity.hurt`, `entity.death`, `server.tick`, `server.startup`.
 - Custom advancements defined in Lua (`advancement.add`), Triumph-style, synced to clients; vanilla advancements and whole trees can be hidden or fully replaced (`removeVanillaAdvancement`, `removeVanillaTree`, `removeAllVanilla`).
-- Recursive script loading with per-file error reporting.
+- **Advancement modification** (`advancement.modify`) with deep merge for patching display/criteria/rewards.
+- **Advancement rewards**: experience, recipes, loot tables, functions.
+- **Advancement AND/OR requirements** via named groups converted to vanilla array format.
+- **Advancement callbacks**: `advancement.on_complete(id, fn)` and `advancement.on_complete_any(fn)` for Lua-side reactions.
+- **Server API**: `server.runCommand(cmd)`, `server.broadcast(msg)`, `server.sendMessage(player, msg)`, `server.getPlayer(name)`.
+- **Player API**: `player.giveItem(item, count)`, `player.giveItemStack({...})`, `player.consumeHeld()`, `player.getHeldItem()`, `player.countItem(id)`, `player.addEffect(effect, duration, amplifier)`, `player.clearEffects()`, `player.teleport(x,y,z,dim)`.
+- **Item API**: `item.exists(id)`, `item.get(id)`, `item.getByOre(name)`, `item.listOre(name)`.
+- **JSON API**: `json.parse()`, `json.stringify()`, `json.readFile(path)`, `json.writeFile(path, table)`.
+- **NBT API**: `nbt.parse()`, `nbt.set()`, `nbt.get()`.
+- Recursive script loading with per-file error reporting and **line numbers in errors**.
+- **Module support** with `require()` from `lua_scripts/<stage>/modules/`.
+- **Developer commands**: `/moontweaker check <file>` (syntax validation), `/moontweaker trace on|off` (verbose logging).
 - Sandboxed Lua runtime: no filesystem, no Java reflection, no `os.execute`.
-- Module support with `require`.
 - No Mixin, no coremod, no patched Minecraft classes.
 
 ## Requirements
@@ -198,6 +210,22 @@ log.info("value = " .. cfg.value)
 ```
 
 Path traversal outside the stage folder is rejected.
+
+### JSON / NBT API
+
+Available in `lua_scripts/server/` and `lua_scripts/startup/`.
+
+```lua
+-- JSON
+local data = json.parse('{"name":"test","count":5}')
+local str = json.stringify({item="diamond", tags={"rare","gem"}})
+json.writeFile("config/data.json", data)
+local loaded = json.readFile("config/data.json")
+
+-- NBT
+local nbtStr = nbt.parse('{display:{Name:"\\"§6Sword\\""},Enchantments:[{id:"minecraft:sharpness",lvl:5}]}')
+local helper = nbt.set({}, "display.Name", '{"text":"Custom Name"}') -- for use with giveItemStack
+```
 
 ### Recipes
 
@@ -661,6 +689,184 @@ moonexpansion.ie.arc_furnace.add_recipe(
 | `energy_per_tick` | `100` RF/t |
 | `slag` | none |
 
+### Server API
+
+Available in `lua_scripts/server/` and `lua_scripts/startup/`.
+
+```lua
+-- Run command as server console
+server.runCommand("say Hello from MoonTweaker!")
+
+-- Broadcast to all players
+server.broadcast("§aServer announcement!")
+
+-- Send private message
+server.sendMessage(player, "§eWelcome to the server!")
+
+-- Get player by name
+local p = server.getPlayer("Notch")
+if p then
+  log.info("Found player: " .. p.name)
+end
+```
+
+### Player API
+
+Available in `lua_scripts/server/` and `lua_scripts/startup/`. `player` is the table from events or `server.getPlayer()`.
+
+```lua
+-- Inventory
+local held = player.getHeldItem()           -- { id, count, meta } or nil
+local count = player.countItem("minecraft:diamond")
+player.giveItem("minecraft:diamond", 5)
+player.giveItemStack({ item = "minecraft:diamond_sword", count = 1, nbt = nbtStr })
+player.consumeHeld()                        -- consume 1 from held stack
+
+-- Effects
+player.addEffect("minecraft:speed", 600, 1) -- 30s Speed II
+player.clearEffects()
+
+-- Teleport
+player.teleport(100, 64, 200, 0)            -- x, y, z, dimension
+```
+
+### Item API
+
+Available in `lua_scripts/server/` and `lua_scripts/startup/`.
+
+```lua
+-- Check if item exists
+if item.exists("minecraft:diamond") then ... end
+
+-- Get item info
+local info = item.get("minecraft:diamond")
+-- { id = "minecraft:diamond", maxStack = 64, maxDamage = 0, creativeTab = "misc" }
+
+-- Ore dictionary lookups
+local items = item.getByOre("ingotIron")    -- first match
+local allItems = item.listOre("ingotIron")  -- all matches: { "minecraft:iron_ingot", ... }
+```
+
+### Advancement API
+
+Available in `lua_scripts/server/` and `lua_scripts/startup/`.
+
+```lua
+-- Add custom advancement
+advancement.add("mymod:smelt_iron", {
+  display = {
+    title = "Iron Smelter",
+    description = "Smelt your first iron ingot",
+    icon = "minecraft:iron_ingot",          -- or "minecraft:iron_ingot:0:1"
+    frame = "task",
+    show_toast = true,
+    announce_to_chat = true,
+    hidden = false
+  },
+  criteria = {
+    smelted = {
+      trigger = "minecraft:inventory_changed",
+      conditions = {
+        items = { { item = "minecraft:iron_ingot" } }
+      }
+    }
+  },
+  requirements = {
+    first = { "smelted" }
+  },
+  rewards = {
+    experience = 50,
+    recipes = { "minecraft:iron_sword" },
+    loot = { "minecraft:entities/zombie" },
+    function = "mymod:reward_function"
+  }
+})
+
+-- Modify existing advancement (deep merge)
+advancement.modify("minecraft:story/smelt_iron", {
+  display = { title = "§6Iron Smelter" }
+})
+
+-- Remove vanilla advancement (tombstone)
+advancement.removeVanillaAdvancement("minecraft:story/smelt_iron")
+
+-- Remove entire vanilla tree
+advancement.removeVanillaTree("minecraft:story/root")
+
+-- Hide all vanilla advancements
+advancement.removeAllVanilla()
+
+-- Callbacks when advancement completes
+advancement.on_complete("mymod:smelt_iron", function(player)
+  server.sendMessage(player, "§aQuest complete!")
+end)
+
+advancement.on_complete_any(function(player, advId)
+  log.info(player.name .. " completed " .. advId)
+end)
+```
+
+**AND/OR Requirements** - Use named groups converted to vanilla array format:
+```lua
+requirements = {
+  tier1 = { "has_iron", "has_gold" },   -- AND: need both
+  tier2 = { "has_diamond" }              -- OR with tier1
+}
+```
+
+### Registry API (Extended)
+
+#### `registry.oreDict(name, itemId, meta?)`
+
+Registers an item to the Forge Ore Dictionary. Available **only** in `lua_scripts/registry/`.
+
+```lua
+registry.oreDict("oreCopper", "minecraft:gold_ingot", 0)
+registry.oreDict("oreTin", "minecraft:iron_ingot", 0)
+```
+
+| Parameter | Type | Default |
+|---|---|---|
+| `name` | string | required |
+| `itemId` | string | required |
+| `meta` | integer | `0` |
+
+#### `registry.fuel(itemId, burnTime, meta?)`
+
+Sets a custom furnace fuel burn time for an item. Available **only** in `lua_scripts/registry/`.
+
+```lua
+registry.fuel("minecraft:stick", 100, 0)        -- 100 ticks (5 seconds)
+registry.fuel("minecraft:blaze_rod", 2400, 0)   -- 2400 ticks (2 minutes)
+```
+
+| Parameter | Type | Default |
+|---|---|---|
+| `itemId` | string | required |
+| `burnTime` | integer | required (ticks) |
+| `meta` | integer | `0` |
+
+#### `registry.batch(definitions)`
+
+Bulk registers items, blocks, tools, armor, and fluids. Available **only** in `lua_scripts/registry/`.
+
+```lua
+registry.batch({
+  copper_ingot = { type = "item", options = { max_stack = 64 } },
+  copper_block = { type = "block", options = { material = "iron", hardness = 5.0 } },
+  copper_pickaxe = { type = "tool", material = "copper", options = { attackDamage = 2.0 } },
+  copper_armor = { type = "armor", options = { material = "copper", helmet = true, chestplate = true } }
+})
+```
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | string ("item"|"block"|"tool"|"armor"|"fluid") | Yes |
+| `material` | string (for tool/armor) | For tool/armor |
+| `options` | table | No |
+
+Requires `registry.material()` for tool/armor materials.
+
 ### Events
 
 Register a callback with `events.on(name, function)`. Callbacks receive one table argument; cancelable events expose `e:cancel()`.
@@ -668,11 +874,21 @@ Register a callback with `events.on(name, function)`. Callbacks receive one tabl
 | Event | Fields | Cancelable |
 |---|---|---|
 | `player.logged_in` | `player` | No |
+| `player.logged_out` | `player` | No |
+| `player.death` | `player`, `killer` (may be `nil`) | No |
+| `player.dimension_change` | `player`, `from_dim`, `to_dim` | No |
+| `player.craft` | `player`, `recipe`, `output` | No |
 | `block.break` | `player`, `block`, `pos` | Yes |
 | `block.place` | `player`, `block`, `pos` | Yes |
-| `entity.death` | `entity`, `player` (may be `nil`) | Yes |
+| `block.interact` | `player`, `block`, `pos`, `hand`, `face` | Yes |
+| `item.pickup` | `player`, `item`, `count` | Yes |
+| `item.right_click` | `player`, `item`, `hand` | Yes |
 | `item.use` | `player`, `item` | Yes |
+| `entity.spawn` | `entity`, `type` | Yes |
+| `entity.hurt` | `entity`, `source`, `amount` | Yes |
+| `entity.death` | `entity`, `player` (may be `nil`) | Yes |
 | `server.tick` | none | No |
+| `server.startup` | none | No |
 
 `player` is a table: `{ name, uuid, x, y, z, dimension }`.
 `pos` is a table: `{ x, y, z }`.
@@ -757,12 +973,63 @@ loot.add("minecraft:chests/simple_dungeon", {
 -- Machines
 moonexpansion.ie.crusher.add_recipe("minecraft:iron_dust * 3", "ore:oreIron")
 
+-- Server API
+server.runCommand("say MoonTweaker loaded!")
+server.broadcast("§aWelcome to the server!")
+
+-- Player API
+events.on("player.logged_in", function(e)
+  local p = server.getPlayer(e.player.name)
+  if p then
+    p.giveItem("minecraft:bread", 5)
+    p.addEffect("minecraft:speed", 1200, 0)
+    server.sendMessage(p, "§eWelcome! Here's some bread and Speed.")
+  end
+end)
+
+-- Item API
+local diamond = item.get("minecraft:diamond")
+local allIron = item.listOre("ingotIron")
+
+-- Advancement API
+advancement.add("mymod:first_iron", {
+  display = {
+    title = "First Iron",
+    description = "Obtain your first iron ingot",
+    icon = "minecraft:iron_ingot"
+  },
+  criteria = {
+    got_iron = {
+      trigger = "minecraft:inventory_changed",
+      conditions = { items = { { item = "minecraft:iron_ingot" } } }
+    }
+  },
+  rewards = {
+    experience = 20,
+    recipes = { "minecraft:iron_pickaxe" }
+  }
+})
+
+advancement.on_complete("mymod:first_iron", function(player)
+  server.sendMessage(player, "§aQuest complete! Iron tools unlocked.")
+end)
+
 -- Events
 events.on("block.break", function(e)
   if e.block == "minecraft:diamond_ore" then
     e:cancel()
   end
 end)
+
+events.on("player.craft", function(e)
+  log.info(e.player.name .. " crafted " .. e.output.id)
+end)
+
+-- JSON/NBT
+local config = json.readFile("config/mymod.json")
+if config then
+  log.info("Loaded config: " .. json.stringify(config))
+end
 ```
 
 ## Commands
@@ -771,8 +1038,12 @@ end)
 |---|---|
 | `/moontweaker reload` | Reload and re-run `lua_scripts/server/` |
 | `/moontweaker errors` | Print the last script errors with file and line |
+| `/moontweaker check <file.lua>` | Validate Lua syntax without executing (shows line numbers on error) |
+| `/moontweaker trace on|off` | Enable/disable verbose script execution logging |
+| `/moontweaker dump items|blocks|fluids|recipes|ores|registry` | Dump registry contents to log |
+| `/moontweaker info held|player` | Inspect held item or player data |
 
-Both commands are currently available to all players. Server operators are expected to restrict access via their permissions plugin until permission checks are added.
+All commands are currently available to all players. Server operators are expected to restrict access via their permissions plugin until permission checks are added.
 
 ## Sandbox
 
@@ -797,7 +1068,7 @@ Scripts run on the server thread. There is currently **no instruction budget or 
 - `loot.remove` matches direct item entries by item, not by metadata or entry name. Nested table references and custom loot entries are left untouched.
 - Loot conditions and functions are not exposed to Lua.
 - Registered content can only be created once per game start; restart after editing.
-- The registry API does not generate models, textures, language entries or ore dictionary entries.
+- The registry API does not generate models, textures, language entries or ore dictionary entries. (Use `registry.oreDict()` for ore dict registration)
 - Registered blocks have no custom block models, block states, tile entities or harvest levels.
 - Creative tabs are fixed: items and buckets go to Misc, blocks to Building Blocks, tools to Tools, armor to Combat.
 - Machine recipes can only be added while the game is starting. `/moontweaker reload` cannot apply them; restart required.
@@ -814,10 +1085,27 @@ Scripts run on the server thread. There is currently **no instruction budget or 
 
 1. Client recipe-book and JEI synchronization.
 2. Automatic asset and language generation for registered content.
-3. Ore dictionary registration for generated materials.
-4. Machine recipe removal and editing.
-5. Instruction budget and watchdog for untrusted scripts.
-6. EmmyLua stubs generated from the binding registry.
+3. Machine recipe removal and editing.
+4. Instruction budget and watchdog for untrusted scripts.
+5. EmmyLua stubs generated from the binding registry.
+
+## Implemented (v0.3.0)
+
+- [x] Custom ore dictionary registration (`registry.oreDict`)
+- [x] Fuel value customization (`registry.fuel`)
+- [x] Advancement rewards (experience, recipes, loot, functions)
+- [x] Advancement AND/OR requirements
+- [x] Advancement callbacks (`on_complete`, `on_complete_any`)
+- [x] Advancement modification (`advancement.modify`)
+- [x] Server API (`runCommand`, `broadcast`, `sendMessage`, `getPlayer`)
+- [x] Player API (inventory, effects, teleport)
+- [x] Item API (`exists`, `get`, `getByOre`, `listOre`)
+- [x] JSON/NBT API (`json.parse`, `stringify`, `readFile`, `writeFile`, `nbt.parse`, `nbt.set`)
+- [x] Extended events (14 total: login, logout, death, dimension, craft, break, place, interact, pickup, right_click, use, spawn, hurt, server startup)
+- [x] Batch registration (`registry.batch`)
+- [x] Module support with `require()`
+- [x] Error line numbers in script errors
+- [x] Developer commands (`check`, `trace`)
 
 ## Troubleshooting
 
